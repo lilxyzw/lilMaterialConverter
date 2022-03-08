@@ -2,30 +2,30 @@
 using UnityEditor;
 using UnityEngine;
 using System;
-using System.Collections.Generic;
 using System.IO;
+
+// 1.0.1
+// - Fixed conversion of transparent material and MatCap
+// - Stencil support
+// - Improved conversion accuracy between rim light, outline and AOMap
 
 namespace lilToon
 {
-    public class lilMaterialConverter : MonoBehaviour
+    public static class lilMaterialConverter
     {
-        [MenuItem("Assets/lilToon/Convert material to lilToon")]
-        static void ConvertMaterial()
+        [MenuItem("Assets/lilToon/[Material] Convert material to lilToon", false, 1120)]
+        private static void ConvertMaterial()
         {
             if(Selection.objects.Length == 0) return;
             bool shouldConvert = EditorUtility.DisplayDialog("Convert material to lilToon", "Are you sure you want to convert the material?\r\n(It is recommended to make a backup before conversion)", "OK", "Cancel");
             if(!shouldConvert) return;
             for(int i = 0; i < Selection.objects.Length; i++)
             {
-                if(Selection.objects[i] is Material)
+                if(Selection.objects[i] is Material material)
                 {
-                    Material material = (Material)Selection.objects[i];
-                    lilToonConvertProperties d = new lilToonConvertProperties();
+                    lilToonConvertProperties d = new lilToonConvertProperties(){_RenderQueue = -1};
                     if(IsUTS(material))
                     {
-                        d.isCutout = IsUTSClipping(material);
-                        d.isTransparent = IsUTSTransClipping(material);
-                        d.isOutline = IsUTSOutline(material);
                         GetUTSProperties(ref d, material);
                     }
 
@@ -37,23 +37,23 @@ namespace lilToon
             EditorUtility.DisplayDialog("Convert material to lilToon", "Complete!", "OK");
         }
 
-        [MenuItem("Assets/lilToon/Convert material to lilToon", true, 20)]
-        static bool CheckFormat()
+        [MenuItem("Assets/lilToon/[Material] Convert material to lilToon", true, 1120)]
+        private static bool CheckMaterialFormat()
         {
             if(Selection.activeObject == null) return false;
-            string path = AssetDatabase.GetAssetPath(Selection.activeObject).ToLower();
-            return path.EndsWith(".mat");
+            return AssetDatabase.GetAssetPath(Selection.activeObject).EndsWith(".mat", StringComparison.OrdinalIgnoreCase);
         }
 
-        struct lilTex
+        private struct lilTex
         {
             public Texture tex;
             public Vector2 offset;
             public Vector2 scale;
         };
 
-        struct lilToonConvertProperties
+        private struct lilToonConvertProperties
         {
+            public int _RenderQueue;
             public bool isOutline;
             public bool isCutout;
             public bool isTransparent;
@@ -212,26 +212,35 @@ namespace lilToon
             public lilTex? _OutlineWidthMask;
             public float? _OutlineFixWidth;
             public float? _OutlineVertexR2Width;
+            public lilTex? _OutlineVectorTex;
             public float? _OutlineEnableLighting;
+
+            public float? _StencilRef;
+            public float? _StencilComp;
+            public float? _StencilPass;
+            public float? _StencilFail;
+            public float? _OutlineStencilRef;
+            public float? _OutlineStencilComp;
+            public float? _OutlineStencilPass;
+            public float? _OutlineStencilFail;
         };
 
         //----------------------------------------------------------------------------------------------------------------------
         // Shader setting
-        static void AutoShaderSetting()
+        private static void AutoShaderSetting()
         {
             // Load shader setting
             lilToonSetting shaderSetting = null;
             lilToonInspector.InitializeShaderSetting(ref shaderSetting);
 
-            if(shaderSetting == null || shaderSetting.isLocked) return;
+            if(shaderSetting?.isLocked != false) return;
 
             lilToonSetting shaderSettingNew = UnityEngine.Object.Instantiate(shaderSetting);
 
             for(int i = 0; i < Selection.objects.Length; i++)
             {
-                if(Selection.objects[i] is Material)
+                if(Selection.objects[i] is Material material)
                 {
-                    Material material = (Material)Selection.objects[i];
                     lilToonInspector.SetupShaderSettingFromMaterial(material, ref shaderSettingNew);
                 }
             }
@@ -249,7 +258,7 @@ namespace lilToon
 
         //----------------------------------------------------------------------------------------------------------------------
         // Material
-        static lilTex? GetMaterialTexture(Material material, string name)
+        private static lilTex? GetMaterialTexture(Material material, string name)
         {
             if(!material.HasProperty(name)) return null;
             lilTex outProp;
@@ -259,60 +268,71 @@ namespace lilToon
             return outProp;
         }
 
-        static Color? GetMaterialColor(Material material, string name)
+        private static Color? GetMaterialColor(Material material, string name)
         {
             if(!material.HasProperty(name)) return null;
             return material.GetColor(name);
         }
 
-        static Color? GetMaterialColorNA(Material material, string name)
+        private static Color? GetMaterialColorNA(Material material, string name)
         {
             if(!material.HasProperty(name)) return null;
             Color outColor = material.GetColor(name);
             return new Color(outColor.r, outColor.g, outColor.b, 1.0f);
         }
 
-        static float? GetMaterialFloat(Material material, string name)
+        private static float? GetMaterialFloat(Material material, string name)
         {
             if(!material.HasProperty(name)) return null;
             return material.GetFloat(name);
         }
 
-        static bool GetMaterialToggle(Material material, string name)
+        private static bool GetMaterialToggle(Material material, string name)
         {
             return material.HasProperty(name) && (material.GetFloat(name) == 1.0f);
         }
 
-        static bool IsColorWhite(Color color)
+        private static bool IsColorWhite(Color color)
         {
             return color.r == 1.0f && color.g == 1.0f && color.b == 1.0f;
         }
 
-        static bool IsColorWhite(Color? color)
+        private static bool IsColorWhite(Color? color)
         {
             return color == null || IsColorWhite((Color)color);
         }
 
-        static bool IsColorBlack(Color color)
+        private static bool IsColorBlack(Color color)
         {
             return color.r == 0.0f && color.g == 0.0f && color.b == 0.0f;
         }
 
-        static bool IsColorBlack(Color? color)
+        private static bool IsColorBlack(Color? color)
         {
             return color == null || IsColorBlack((Color)color);
         }
 
-        static void SetScaleAndOffset(ref lilTex? origTex, Vector2 Scale, Vector2 Offset)
+        private static Color ColorDiv(Color a, Color b)
         {
-            lilTex newTex = new lilTex();
-            newTex.tex = ((lilTex)origTex).tex;
-            newTex.scale = Scale;
-            newTex.offset = Offset;
-            origTex = newTex;
+            return new Color(
+                a.r / b.r,
+                a.g / b.g,
+                a.b / b.b,
+                a.a / b.a
+            );
         }
 
-        static void SetPropertiesToMaterial(lilToonConvertProperties d, ref Material material)
+        private static void SetScaleAndOffset(ref lilTex? origTex, Vector2 Scale, Vector2 Offset)
+        {
+            origTex = new lilTex
+            {
+                tex = ((lilTex)origTex).tex,
+                scale = Scale,
+                offset = Offset
+            };
+        }
+
+        private static void SetPropertiesToMaterial(lilToonConvertProperties d, ref Material material)
         {
             string shaderName = "lilToon";
             if(d.isCutout) shaderName += "Cutout";
@@ -500,28 +520,40 @@ namespace lilToon
             SetProperty(d._OutlineWidthMask, "_OutlineWidthMask", ref material);
             SetProperty(d._OutlineFixWidth, "_OutlineFixWidth", ref material);
             SetProperty(d._OutlineVertexR2Width, "_OutlineVertexR2Width", ref material);
+            SetProperty(d._OutlineVectorTex, "_OutlineVectorTex", ref material);
             SetProperty(d._OutlineEnableLighting, "_OutlineEnableLighting", ref material);
+
+            SetProperty(d._StencilRef, "_StencilRef", ref material);
+            SetProperty(d._StencilComp, "_StencilComp", ref material);
+            SetProperty(d._StencilPass, "_StencilPass", ref material);
+            SetProperty(d._StencilFail, "_StencilFail", ref material);
+            SetProperty(d._OutlineStencilRef, "_OutlineStencilRef", ref material);
+            SetProperty(d._OutlineStencilComp, "_OutlineStencilComp", ref material);
+            SetProperty(d._OutlineStencilPass, "_OutlineStencilPass", ref material);
+            SetProperty(d._OutlineStencilFail, "_OutlineStencilFail", ref material);
+
+            material.renderQueue = d._RenderQueue;
         }
 
-        static void SetProperty(float? d, String name, ref Material material)
+        private static void SetProperty(float? d, string name, ref Material material)
         {
             if(d == null) return;
             material.SetFloat(name, (float)d);
         }
 
-        static void SetProperty(Vector4? d, String name, ref Material material)
+        private static void SetProperty(Vector4? d, string name, ref Material material)
         {
             if(d == null) return;
             material.SetVector(name, (Vector4)d);
         }
 
-        static void SetProperty(Color? d, String name, ref Material material)
+        private static void SetProperty(Color? d, string name, ref Material material)
         {
             if(d == null) return;
             material.SetColor(name, (Color)d);
         }
 
-        static void SetProperty(lilTex? d, String name, ref Material material)
+        private static void SetProperty(lilTex? d, string name, ref Material material)
         {
             if(d == null) return;
             material.SetTexture(name, ((lilTex)d).tex);
@@ -529,24 +561,40 @@ namespace lilToon
             material.SetTextureScale(name, ((lilTex)d).scale);
         }
 
-        static void SetBorderAndBlur(float? max, float? min, String borderName, String blurName, ref Material material)
+        private static void SetBorderAndBlur(float? max, float? min, string borderName, string blurName, ref Material material)
         {
             if(max == null || min == null) return;
             float border = ((float)max + (float)min) * 0.5f;
-            float blur = ((float)max - (float)min);
+            float blur = (float)max - (float)min;
             material.SetFloat(borderName, border);
             material.SetFloat(blurName, blur);
         }
 
-        static void SetAOMask(lilTex? ao1st, lilTex? ao2nd, String name, ref Material material)
+        private static void SetAOMask(lilTex? ao1st, lilTex? ao2nd, string name, ref Material material)
         {
             if(ao1st == null && ao2nd == null) return;
             if(ao1st != null && ao2nd != null && (((lilTex)ao1st).tex == ((lilTex)ao2nd).tex))
             {
                 material.SetTexture(name, ((lilTex)ao1st).tex);
+                material.SetVector("_ShadowAOShift", new Vector4(0.2f,0.8f,0.2f,0.8f));
+                return;
             }
             else
             {
+                if((ao1st != null && ((lilTex)ao1st).tex != null) && !(ao2nd != null && ((lilTex)ao2nd).tex != null))
+                {
+                    material.SetTexture(name, ((lilTex)ao1st).tex);
+                    material.SetVector("_ShadowAOShift", new Vector4(0.2f,0.8f,0.0f,1.0f));
+                    return;
+                }
+
+                if(!(ao1st != null && ((lilTex)ao1st).tex != null) && (ao2nd != null && ((lilTex)ao2nd).tex != null))
+                {
+                    material.SetTexture(name, ((lilTex)ao2nd).tex);
+                    material.SetVector("_ShadowAOShift", new Vector4(0.0f,1.0f,0.2f,0.8f));
+                    return;
+                }
+
                 bool shouldSave = EditorUtility.DisplayDialog("Convert material to lilToon", "Do you want to convert AO Mask?", "Yes", "No");
                 if(shouldSave)
                 {
@@ -558,23 +606,38 @@ namespace lilToon
 
                     // Load
                     string path = "";
-                    if(ao1st != null)
+                    if(ao1st != null && ((lilTex)ao1st).tex != null)
                     {
                         path = AssetDatabase.GetAssetPath(((lilTex)ao1st).tex);
-                        byte[] bytes = File.ReadAllBytes(Path.GetFullPath(path));
-                        ao1stTexture.LoadImage(bytes);
-                        bakeMaterial.SetTexture("_PackingTexture1", ao1stTexture);
-                        bakeMaterial.SetFloat("_PackingChannel1", 0.0f);
-                        srcTexture = ao1stTexture;
+                        if(!string.IsNullOrEmpty(path))
+                        {
+                            byte[] bytes = File.ReadAllBytes(Path.GetFullPath(path));
+                            ao1stTexture.LoadImage(bytes);
+                            bakeMaterial.SetTexture("_PackingTexture1", ao1stTexture);
+                            bakeMaterial.SetFloat("_PackingChannel1", 0.0f);
+                            srcTexture = ao1stTexture;
+                        }
                     }
-                    if(ao2nd != null)
+                    if(ao2nd != null && ((lilTex)ao2nd).tex != null)
                     {
-                        path = AssetDatabase.GetAssetPath(((lilTex)ao2nd).tex);
-                        byte[] bytes = File.ReadAllBytes(Path.GetFullPath(path));
-                        ao2ndTexture.LoadImage(bytes);
-                        bakeMaterial.SetTexture("_PackingTexture1", ao2ndTexture);
-                        bakeMaterial.SetFloat("_PackingChannel1", 0.0f);
-                        srcTexture = ao2ndTexture;
+                        string path2 = AssetDatabase.GetAssetPath(((lilTex)ao2nd).tex);
+                        if(!string.IsNullOrEmpty(path))
+                        {
+                            path = path2;
+                            byte[] bytes = File.ReadAllBytes(Path.GetFullPath(path));
+                            ao2ndTexture.LoadImage(bytes);
+                            bakeMaterial.SetTexture("_PackingTexture1", ao2ndTexture);
+                            bakeMaterial.SetFloat("_PackingChannel1", 0.0f);
+                            srcTexture = ao2ndTexture;
+                        }
+                    }
+                    if(srcTexture.width <= 2 || string.IsNullOrEmpty(path))
+                    {
+                        UnityEngine.Object.DestroyImmediate(bakeMaterial);
+                        UnityEngine.Object.DestroyImmediate(srcTexture);
+                        UnityEngine.Object.DestroyImmediate(ao1stTexture);
+                        UnityEngine.Object.DestroyImmediate(ao2ndTexture);
+                        return;
                     }
 
                     // Bake
@@ -585,10 +648,11 @@ namespace lilToon
                     outTexture.Apply();
 
                     // Save
-                    string savePath = Path.GetDirectoryName(path) + "/" + Path.GetFileNameWithoutExtension(path) + "_lilAO" + ".png";
+                    string savePath = Path.GetDirectoryName(path) + "/" + Path.GetFileNameWithoutExtension(path) + "_lilAO.png";
                     File.WriteAllBytes(savePath, outTexture.EncodeToPNG());
                     AssetDatabase.Refresh();
                     AssetDatabase.ImportAsset(savePath);
+                    Debug.Log("[lilMaterialConverter] AOMap exported at \"" + savePath + "\"");
 
                     UnityEngine.Object.DestroyImmediate(bakeMaterial);
                     UnityEngine.Object.DestroyImmediate(srcTexture);
@@ -596,48 +660,65 @@ namespace lilToon
                     UnityEngine.Object.DestroyImmediate(ao1stTexture);
                     UnityEngine.Object.DestroyImmediate(ao2ndTexture);
 
-                    Texture aotex = (Texture)AssetDatabase.LoadAssetAtPath(savePath, typeof(Texture));
+                    Texture aotex = AssetDatabase.LoadAssetAtPath<Texture>(savePath);
                     material.SetTexture(name, aotex);
+                    material.SetVector("_ShadowAOShift", new Vector4(0.2f,0.8f,0.2f,0.8f));
                 }
             }
         }
 
         //----------------------------------------------------------------------------------------------------------------------
         // UTS
-        static bool IsUTS(Material material)
+        private static bool IsUTS(Material material)
         {
-            return (material.shader != null && material.shader.name.Contains("UnityChanToonShader")) || material.HasProperty("_utsVersion");
+            return (material.shader?.name.Contains("UnityChanToonShader") == true) || material.HasProperty("_utsVersion");
         }
 
-        static bool IsUTSClipping(Material material)
+        private static bool IsUTSClipping(Material material)
         {
-            return (material.shader != null && material.shader.name.Contains("_Clipping")) || (material.shader == null && !material.HasProperty("_ClippingMask") && !material.HasProperty("_Tweak_transparency"));
+            return (material.shader?.name.Contains("_Clipping") == true) || (material.shader == null && !material.HasProperty("_ClippingMask") && !material.HasProperty("_Tweak_transparency"));
         }
 
-        static bool IsUTSTransClipping(Material material)
+        private static bool IsUTSTransparent(Material material)
         {
-            return (material.shader != null && material.shader.name.Contains("_TransClipping")) || (material.shader == null && material.HasProperty("_Tweak_transparency"));
+            return (material.shader != null && (material.shader.name.Contains("_TransClipping") || material.shader.name.Contains("_Transparent"))) || (material.shader == null && material.HasProperty("_Tweak_transparency"));
         }
 
-        static bool IsUTSAngelRing(Material material)
+        private static bool IsUTSAngelRing(Material material)
         {
-            return (material.shader != null && material.shader.name.Contains("AngelRing")) || (material.shader == null && material.HasProperty("_AngelRing"));
+            return (material.shader?.name.Contains("AngelRing") == true) || (material.shader == null && material.HasProperty("_AngelRing"));
         }
 
-        static bool IsUTSOutline(Material material)
+        private static bool IsUTSOutline(Material material)
         {
-            return (material.shader != null && !material.shader.name.Contains("NoOutline")) || (material.shader == null && material.HasProperty("_Outline_Width"));
+            return (material.shader?.name.Contains("NoOutline") == false) || (material.shader == null && material.HasProperty("_Outline_Width"));
         }
 
-        static void GetUTSProperties(ref lilToonConvertProperties d, Material material)
+        private static bool IsUTSShadingGradeMap(Material material)
+        {
+            return (material.shader?.name.Contains("ShadingGradeMap") == true) || (material.shader == null && !material.HasProperty("_ShadingGradeMap"));
+        }
+
+        private static bool IsUTSStencilMask(Material material)
+        {
+            return material.shader?.name.Contains("StencilMask") == true;
+        }
+
+        private static bool IsUTSStencilOut(Material material)
+        {
+            return material.shader?.name.Contains("StencilOut") == true;
+        }
+
+        private static void GetUTSProperties(ref lilToonConvertProperties d, Material material)
         {
             d.isCutout = IsUTSClipping(material);
-            d.isTransparent = IsUTSTransClipping(material);
+            d.isTransparent = IsUTSTransparent(material);
             d.isOutline = IsUTSOutline(material);
+            bool isShadingGradeMap = IsUTSShadingGradeMap(material);
 
             // Main
             d._MainTex = GetMaterialTexture(material, "_MainTex");
-            d._MainColor = GetMaterialColorNA(material, "_BaseColor");
+            d._MainColor = GetMaterialColorNA(material, "_BaseColor") ?? Color.white;
             d._Cull = GetMaterialFloat(material, "_CullMode");
 
             // AlphaMask
@@ -670,18 +751,18 @@ namespace lilToon
             // Shadow
             d._UseShadow = 1.0f;
             d._ShadowColor = GetMaterialColorNA(material, "_1st_ShadeColor") ?? Color.white;
+            d._ShadowColor = ColorDiv((Color)d._ShadowColor, (Color)d._MainColor);
             d._ShadowBorderMax = GetMaterialFloat(material, "_BaseColor_Step") ?? 0.5f;
             d._ShadowBorderMin = d._ShadowBorderMax - (GetMaterialFloat(material, "_BaseShade_Feather") ?? 0.25f);
-            d._ShadowAO = GetMaterialTexture(material, "_Set_1st_ShadePosition");
             if(!GetMaterialToggle(material, "_Use_BaseAs1st"))
             {
                 d._ShadowColorTex = GetMaterialTexture(material, "_1st_ShadeMap");
             }
 
             d._Shadow2ndColor = GetMaterialColorNA(material, "_2nd_ShadeColor") ?? Color.white;
+            d._Shadow2ndColor = ColorDiv((Color)d._Shadow2ndColor, (Color)d._MainColor);
             d._Shadow2ndBorderMax = GetMaterialFloat(material, "_ShadeColor_Step") ?? 0.25f;
             d._Shadow2ndBorderMin = d._Shadow2ndBorderMax - (GetMaterialFloat(material, "_1st2nd_Shades_Feather") ?? 0.125f);
-            d._Shadow2ndAO = GetMaterialTexture(material, "_Set_2nd_ShadePosition");
             if(!GetMaterialToggle(material, "_Use_1stAs2nd"))
             {
                 d._Shadow2ndColorTex = GetMaterialTexture(material, "_2nd_ShadeMap");
@@ -693,10 +774,15 @@ namespace lilToon
             d._ShadowBorderColor = Color.black;
             d._ShadowMainStrength = 0.0f;
 
-            if(material.HasProperty("_ShadingGradeMap"))
+            if(isShadingGradeMap)
             {
                 d._ShadowAO = GetMaterialTexture(material, "_ShadingGradeMap");
                 d._Shadow2ndAO = GetMaterialTexture(material, "_ShadingGradeMap");
+            }
+            else
+            {
+                d._ShadowAO = GetMaterialTexture(material, "_Set_1st_ShadePosition");
+                d._Shadow2ndAO = GetMaterialTexture(material, "_Set_2nd_ShadePosition");
             }
 
             // Fix shadow color
@@ -734,7 +820,7 @@ namespace lilToon
             d._UseReflection = IsColorBlack(d._ReflectionColor) ? 0.0f : 1.0f;
             d._SpecularNormalStrength = GetMaterialFloat(material, "_Is_NormalMapToHighColor");
 
-            float highColor_Power = (GetMaterialFloat(material, "_HighColor_Power") ?? 0.0f);
+            float highColor_Power = GetMaterialFloat(material, "_HighColor_Power") ?? 0.0f;
             d._SpecularToon = 1.0f;
             if(GetMaterialToggle(material, "_Is_SpecularToHighColor"))
             {
@@ -744,7 +830,7 @@ namespace lilToon
             }
             else
             {
-                d._SpecularBorderMax = 1.0f - highColor_Power * highColor_Power * highColor_Power * highColor_Power * highColor_Power * 2.0f;
+                d._SpecularBorderMax = 1.0f - (highColor_Power * highColor_Power * highColor_Power * highColor_Power * highColor_Power * 2.0f);
                 d._SpecularBorderMax = Mathf.Clamp01((float)d._SpecularBorderMax);
                 d._SpecularBorderMin = d._SpecularBorderMax;
                 d._Smoothness = 0.0f;
@@ -768,6 +854,10 @@ namespace lilToon
                 Vector2 Offset = new Vector2(offsetX + scaleX - 1.0f, offsetY + scaleY - 1.0f);
                 Vector2 Scale = new Vector2(scaleX * tweak_MatCapUV, scaleY * tweak_MatCapUV);
                 SetScaleAndOffset(ref d._MatCapTex, Scale, Offset);
+            }
+            if(d._MatCapTex == null || ((lilTex)d._MatCapTex).tex == null)
+            {
+                d._UseMatCap = 0.0f;
             }
             d._MatCapShadowMask = GetMaterialToggle(material, "_Is_UseTweakMatCapOnShadow") ? 1.0f - (GetMaterialFloat(material, "_TweakMatCapOnShadow") ?? 1.0f) : 0.0f;
             d._MatCapBlendMask = GetMaterialTexture(material, "_Set_MatcapMask");
@@ -841,24 +931,28 @@ namespace lilToon
             }
 
             // Rim
+            float rimLight_Power = GetMaterialFloat(material, "_RimLight_Power") ?? 1.0f;
+            float tweak_RimLightMaskLevel = GetMaterialFloat(material, "_Tweak_RimLightMaskLevel") ?? 0.0f;
+            tweak_RimLightMaskLevel = Mathf.Pow(1.0f + tweak_RimLightMaskLevel, 0.45f);
+            float tweak_LightDirection_MaskLevel = GetMaterialFloat(material, "_Tweak_LightDirection_MaskLevel") ?? 0.0f;
+            float rimLight_InsideMask = GetMaterialFloat(material, "_RimLight_InsideMask") ?? 0.0f;
             d._UseRim = GetMaterialFloat(material, "_RimLight");
-            d._RimColor = GetMaterialColorNA(material, "_RimLightColor");
+            d._RimColor = GetMaterialColorNA(material, "_RimLightColor") ?? Color.black;
             d._RimColorTex = GetMaterialTexture(material, "_Set_RimLightMask");
             d._RimEnableLighting = GetMaterialFloat(material, "_Is_LightColor_RimLight");
             d._RimNormalStrength = GetMaterialFloat(material, "_Is_NormalMapToRimLight");
-            float rimLight_Power = GetMaterialFloat(material, "_RimLight_Power") ?? 1.0f;
-            d._RimFresnelPower = Mathf.Pow(2.0f, (3.0f - 3.0f * rimLight_Power));
-            d._RimBorderMin = GetMaterialFloat(material, "_RimLight_InsideMask") ?? 0.0f;
+            d._RimFresnelPower = Mathf.Pow(2.0f, 3.0f - (3.0f * rimLight_Power));
             d._RimDirStrength = GetMaterialFloat(material, "_LightDirection_MaskOn");
-            float tweak_LightDirection_MaskLevel = GetMaterialFloat(material, "_Tweak_LightDirection_MaskLevel") ?? 0.0f;
-            d._RimDirRange = -tweak_LightDirection_MaskLevel;
-            d._RimIndirRange = -tweak_LightDirection_MaskLevel;
-            d._RimBorderMin -= tweak_LightDirection_MaskLevel * 0.2f;
-            d._RimBorderMin = GetMaterialToggle(material, "_RimLight_FeatherOff") ? d._RimBorderMin : 1.0f - d._RimBorderMin;
-            d._RimBorderMax = GetMaterialToggle(material, "_RimLight_FeatherOff") ? d._RimBorderMin : 1.0f;
+            tweak_LightDirection_MaskLevel = d._RimDirStrength > 0.5f ? tweak_LightDirection_MaskLevel + 0.2f : 0.0f;
+            d._RimDirRange = 0.0f;
+            d._RimIndirRange = 0.0f;
+            d._RimBorderMin = rimLight_InsideMask + tweak_LightDirection_MaskLevel - rimLight_InsideMask * tweak_LightDirection_MaskLevel;
             d._RimIndirBorderMin = d._RimBorderMin;
-            d._RimIndirBorderMax = d._RimBorderMax;
+            d._RimBorderMax = GetMaterialToggle(material, "_RimLight_FeatherOff") ? d._RimBorderMin : 1.0f;
+            d._RimIndirBorderMax = GetMaterialToggle(material, "_Ap_RimLight_FeatherOff") ? d._RimBorderMin : 1.0f;
             d._RimIndirColor = GetMaterialToggle(material, "_Add_Antipodean_RimLight") ? GetMaterialColorNA(material, "_Ap_RimLightColor") : Color.black;
+            d._RimColor = Color.Lerp(Color.black, (Color)d._RimColor, tweak_RimLightMaskLevel);
+            d._RimIndirColor = Color.Lerp(Color.black, (Color)d._RimIndirColor, tweak_RimLightMaskLevel);
 
             // Emission
             d._EmissionMap = GetMaterialTexture(material, "_Emissive_Tex");
@@ -876,6 +970,7 @@ namespace lilToon
             // Outline
             if(d.isOutline)
             {
+                d._OutlineFixWidth = 0.0f;
                 d._OutlineWidth = 0.1f * (GetMaterialFloat(material, "_Outline_Width") ?? 0.0f);
                 d._OutlineWidthMask = GetMaterialTexture(material, "_Outline_Sampler");
                 d._OutlineColor = GetMaterialColorNA(material, "_Outline_Color");
@@ -887,7 +982,36 @@ namespace lilToon
                 {
                     d._OutlineTex = GetMaterialTexture(material, "_MainTex");
                 }
+                if(GetMaterialToggle(material, "_Is_BakedNormal"))
+                {
+                    d._OutlineVectorTex = GetMaterialTexture(material, "_BakedNormal");
+                }
             }
+
+            if(IsUTSStencilMask(material))
+            {
+                d._StencilRef = GetMaterialFloat(material, "_StencilNo");
+                d._OutlineStencilRef = GetMaterialFloat(material, "_StencilNo");
+                d._StencilComp = (float)UnityEngine.Rendering.CompareFunction.Always;
+                d._StencilPass = (float)UnityEngine.Rendering.StencilOp.Replace;
+                d._StencilFail = (float)UnityEngine.Rendering.StencilOp.Replace;
+                d._OutlineStencilComp = (float)UnityEngine.Rendering.CompareFunction.Always;
+                d._OutlineStencilPass = (float)UnityEngine.Rendering.StencilOp.Replace;
+                d._OutlineStencilFail = (float)UnityEngine.Rendering.StencilOp.Replace;
+            }
+            if(IsUTSStencilOut(material))
+            {
+                d._StencilRef = GetMaterialFloat(material, "_StencilNo");
+                d._OutlineStencilRef = GetMaterialFloat(material, "_StencilNo");
+                d._StencilComp = (float)UnityEngine.Rendering.CompareFunction.NotEqual;
+                d._StencilPass = (float)UnityEngine.Rendering.StencilOp.Keep;
+                d._StencilFail = (float)UnityEngine.Rendering.StencilOp.Keep;
+                d._OutlineStencilComp = (float)UnityEngine.Rendering.CompareFunction.NotEqual;
+                d._OutlineStencilPass = (float)UnityEngine.Rendering.StencilOp.Keep;
+                d._OutlineStencilFail = (float)UnityEngine.Rendering.StencilOp.Keep;
+            }
+
+            d._RenderQueue = material.renderQueue;
         }
     }
 }
