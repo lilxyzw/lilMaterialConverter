@@ -9,6 +9,11 @@ using System.IO;
 // - Stencil support
 // - Improved conversion accuracy between rim light, outline and AOMap
 
+// 1.0.2
+// - Improved conversion of HighColor
+// - Support for Built-in Light Direction
+// - Support for UTS3
+
 namespace lilToon
 {
     public static class lilMaterialConverter
@@ -24,7 +29,7 @@ namespace lilToon
                 if(Selection.objects[i] is Material material)
                 {
                     lilToonConvertProperties d = new lilToonConvertProperties(){_RenderQueue = -1};
-                    if(IsUTS(material))
+                    if(IsUTS(material) || IsUTS3(material))
                     {
                         GetUTSProperties(ref d, material);
                     }
@@ -73,6 +78,7 @@ namespace lilToon
             // Lighting
             public float? _LightMinLimit;
             public float? _AsUnlit;
+            public Vector4? _LightDirectionOverride;
 
             // Shadow
             public float? _UseShadow;
@@ -394,6 +400,7 @@ namespace lilToon
 
             SetProperty(d._LightMinLimit, "_LightMinLimit", ref material);
             SetProperty(d._AsUnlit, "_AsUnlit", ref material);
+            SetProperty(d._LightDirectionOverride, "_LightDirectionOverride", ref material);
 
             SetProperty(d._UseShadow, "_UseShadow", ref material);
             SetProperty(d._ShadowReceive, "_ShadowReceive", ref material);
@@ -674,39 +681,44 @@ namespace lilToon
             return (material.shader?.name.Contains("UnityChanToonShader") == true) || material.HasProperty("_utsVersion");
         }
 
+        private static bool IsUTS3(Material material)
+        {
+            return (material.shader?.name.Contains("Toon (Built-in)") == true) || material.HasProperty("_utsVersionX") || material.HasProperty("_utsVersionY") || material.HasProperty("_utsVersionZ");
+        }
+
         private static bool IsUTSClipping(Material material)
         {
-            return (material.shader?.name.Contains("_Clipping") == true) || (material.shader == null && !material.HasProperty("_ClippingMask") && !material.HasProperty("_Tweak_transparency"));
+            return (material.shader?.name.Contains("_Clipping") == true) || (material.shader == null && !material.HasProperty("_ClippingMask") && !material.HasProperty("_Tweak_transparency")) || material.IsKeywordEnabled("_IS_CLIPPING_MODE") || material.IsKeywordEnabled("_IS_TRANSCLIPPING_OFF");
         }
 
         private static bool IsUTSTransparent(Material material)
         {
-            return (material.shader != null && (material.shader.name.Contains("_TransClipping") || material.shader.name.Contains("_Transparent"))) || (material.shader == null && material.HasProperty("_Tweak_transparency"));
+            return (material.shader != null && (material.shader.name.Contains("_TransClipping") || material.shader.name.Contains("_Transparent"))) || (material.shader == null && material.HasProperty("_Tweak_transparency")) || material.IsKeywordEnabled("_IS_CLIPPING_TRANSMODE") || material.IsKeywordEnabled("_IS_TRANSCLIPPING_ON");
         }
 
         private static bool IsUTSAngelRing(Material material)
         {
-            return (material.shader?.name.Contains("AngelRing") == true) || (material.shader == null && material.HasProperty("_AngelRing"));
+            return (material.shader?.name.Contains("AngelRing") == true) || (material.shader == null && material.HasProperty("_AngelRing")) || (IsUTS3(material) && material.HasProperty("_AngelRing"));
         }
 
         private static bool IsUTSOutline(Material material)
         {
-            return (material.shader?.name.Contains("NoOutline") == false) || (material.shader == null && material.HasProperty("_Outline_Width"));
+            return (material.shader?.name.Contains("NoOutline") == false) || (material.shader == null && material.HasProperty("_Outline_Width")) || (IsUTS3(material) && !material.IsKeywordEnabled("_DISABLE_OUTLINE"));
         }
 
         private static bool IsUTSShadingGradeMap(Material material)
         {
-            return (material.shader?.name.Contains("ShadingGradeMap") == true) || (material.shader == null && !material.HasProperty("_ShadingGradeMap"));
+            return (material.shader?.name.Contains("ShadingGradeMap") == true) || (material.shader == null && !material.HasProperty("_ShadingGradeMap")) || material.IsKeywordEnabled("_SHADINGGRADEMAP");
         }
 
         private static bool IsUTSStencilMask(Material material)
         {
-            return material.shader?.name.Contains("StencilMask") == true;
+            return material.shader?.name.Contains("StencilMask") == true || IsUTS3(material) && (GetMaterialFloat(material, "_StencilMode") == 2);
         }
 
         private static bool IsUTSStencilOut(Material material)
         {
-            return material.shader?.name.Contains("StencilOut") == true;
+            return material.shader?.name.Contains("StencilOut") == true || IsUTS3(material) && (GetMaterialFloat(material, "_StencilMode") == 1);
         }
 
         private static void GetUTSProperties(ref lilToonConvertProperties d, Material material)
@@ -824,7 +836,12 @@ namespace lilToon
             d._SpecularToon = 1.0f;
             if(GetMaterialToggle(material, "_Is_SpecularToHighColor"))
             {
-                d._Smoothness = Mathf.Pow(Mathf.Clamp01(0.9f - highColor_Power), 0.367879f);
+                d._Smoothness = Mathf.Clamp01(
+                    0.969f
+                    - 0.136f * highColor_Power
+                    + 0.0387f * highColor_Power * highColor_Power
+                    - 0.725f * highColor_Power * highColor_Power * highColor_Power
+                );
                 d._SpecularBorderMax = 1.0f;
                 d._SpecularBorderMin = 0.0f;
             }
@@ -1009,6 +1026,15 @@ namespace lilToon
                 d._OutlineStencilComp = (float)UnityEngine.Rendering.CompareFunction.NotEqual;
                 d._OutlineStencilPass = (float)UnityEngine.Rendering.StencilOp.Keep;
                 d._OutlineStencilFail = (float)UnityEngine.Rendering.StencilOp.Keep;
+            }
+
+            if(GetMaterialToggle(material, "_Is_BLD"))
+            {
+                float x = (GetMaterialFloat(material, "_Offset_X_Axis_BLD") ?? 0.0f) * 1000.0f;
+                float y = (GetMaterialFloat(material, "_Offset_Y_Axis_BLD") ?? 0.0f) * 1000.0f;
+                float z = GetMaterialToggle(material, "_Inverse_Z_Axis_BLD") ? -100.0f : 100.0f;
+                float w = 1.0f;
+                d._LightDirectionOverride = new Vector4(x,y,z,w);
             }
 
             d._RenderQueue = material.renderQueue;
