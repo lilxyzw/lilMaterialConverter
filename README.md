@@ -11,3 +11,8 @@
 1. unitypackageをUnityウィンドウにドラッグ＆ドロップでインポート
 2. 適宜マテリアルのバックアップを取る
 3. マテリアルを右クリックして`lilToon/Convert material to lilToon`で変換
+
+## Supported Shaders
+|From|To|
+|-|-|
+|Unity-Chan Toon Shader 2.0|lilToon|

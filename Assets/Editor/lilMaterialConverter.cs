@@ -2,6 +2,7 @@
 using UnityEditor;
 using UnityEngine;
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 // 1.0.1
@@ -14,16 +15,50 @@ using System.IO;
 // - Support for Built-in Light Direction
 // - Support for UTS3
 
+// 1.0.3
+// - Improved conversion of AOMap (lilToon 1.2.11)
+// - Add language (Japanese)
+
 namespace lilToon
 {
     public static class lilMaterialConverter
     {
+        private static readonly string[] TEXT_OK = new[] {"OK", "OK"};
+        private static readonly string[] TEXT_CANCEL = new[] {"Cancel", "キャンセル"};
+        private static readonly string[] TEXT_YES = new[] {"Yes", "はい"};
+        private static readonly string[] TEXT_NO = new[] {"No", "いいえ"};
+        private static readonly string[] TEXT_MESSAGE_BEFORE_CONVERT = new[] {
+            "Are you sure you want to convert the material?\r\n(It is recommended to make a backup before conversion)",
+            "マテリアルの変換を実行しますか？\r\n（変換前にマテリアルのバックアップを取っておくことをオススメします）"
+        };
+        private static readonly string[] TEXT_MESSAGE_CONVERT_AO_MASK = new[] {
+            "Do you want to convert AO Mask?",
+            "AOマスクを変換しますか？"
+        };
+        private static readonly string[] TEXT_MESSAGE_ENABLE_SHADER_SETTING = new[] {
+            "Do you want to enable the missing features in shader settings?",
+            "不足しているシェーダー設定を有効化して見た目を再現しますか？"
+        };
+        private static readonly string[] TEXT_MESSAGE_UNSUPPORTED_SHADER = new[] {
+            "Skipped conversion of materials using unsupported shaders.",
+            "非対応のシェーダーを使用しているマテリアルの変換をスキップしました。"
+        };
+        private static readonly string[] TEXT_MESSAGE_COMPLETE = new[] {
+            "Complete!",
+            "完了しました"
+        };
+        private const string TEXT_DIALOG_TITLE = "Convert material to lilToon";
+
+        private static int lang = 0;
+
         [MenuItem("Assets/lilToon/[Material] Convert material to lilToon", false, 1120)]
         private static void ConvertMaterial()
         {
+            lang = Application.systemLanguage == SystemLanguage.Japanese ? 1 : 0;
             if(Selection.objects.Length == 0) return;
-            bool shouldConvert = EditorUtility.DisplayDialog("Convert material to lilToon", "Are you sure you want to convert the material?\r\n(It is recommended to make a backup before conversion)", "OK", "Cancel");
+            bool shouldConvert = EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_BEFORE_CONVERT[lang], TEXT_OK[lang], TEXT_CANCEL[lang]);
             if(!shouldConvert) return;
+            var unsupportedMaterials = new List<string>();
             for(int i = 0; i < Selection.objects.Length; i++)
             {
                 if(Selection.objects[i] is Material material)
@@ -33,13 +68,20 @@ namespace lilToon
                     {
                         GetUTSProperties(ref d, material);
                     }
+                    else
+                    {
+                        string path = AssetDatabase.GetAssetPath(material);
+                        if(!string.IsNullOrEmpty(path)) unsupportedMaterials.Add(path);
+                        continue;
+                    }
 
                     SetPropertiesToMaterial(d, ref material);
                 }
             }
+            if(unsupportedMaterials.Count > 0) EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_UNSUPPORTED_SHADER[lang] + "\r\n" + string.Join("\r\n", unsupportedMaterials), TEXT_OK[lang]);
             AssetDatabase.SaveAssets();
             AutoShaderSetting();
-            EditorUtility.DisplayDialog("Convert material to lilToon", "Complete!", "OK");
+            EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_COMPLETE[lang], TEXT_OK[lang]);
         }
 
         [MenuItem("Assets/lilToon/[Material] Convert material to lilToon", true, 1120)]
@@ -83,10 +125,13 @@ namespace lilToon
             // Shadow
             public float? _UseShadow;
             public float? _ShadowReceive;
+            public float? _ShadowReceive2nd;
+            public float? _ShadowReceive3rd;
             public float? _ShadowStrength;
             public lilTex? _ShadowAO;
             public lilTex? _Shadow2ndAO;
             public Vector4? _ShadowAOShift;
+            public float? _ShadowPostAO;
             public lilTex? _ShadowStrengthMask;
             public Color? _ShadowColor;
             public lilTex? _ShadowColorTex;
@@ -251,7 +296,7 @@ namespace lilToon
                 }
             }
 
-            if(!lilToonInspector.EqualsShaderSetting(shaderSettingNew, shaderSetting) && EditorUtility.DisplayDialog("lilToon", "Do you want to enable the missing features in shader settings?", "Yes", "No"))
+            if(!lilToonInspector.EqualsShaderSetting(shaderSettingNew, shaderSetting) && EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_ENABLE_SHADER_SETTING[lang], TEXT_YES[lang], TEXT_NO[lang]))
             {
                 // Apply
                 lilToonInspector.CopyShaderSetting(ref shaderSetting, shaderSettingNew);
@@ -404,8 +449,11 @@ namespace lilToon
 
             SetProperty(d._UseShadow, "_UseShadow", ref material);
             SetProperty(d._ShadowReceive, "_ShadowReceive", ref material);
+            SetProperty(d._ShadowReceive2nd, "_ShadowReceive2nd", ref material);
+            SetProperty(d._ShadowReceive3rd, "_ShadowReceive3rd", ref material);
             SetProperty(d._ShadowStrength, "_ShadowStrength", ref material);
             SetProperty(d._ShadowAOShift, "_ShadowAOShift", ref material);
+            SetProperty(d._ShadowPostAO, "_ShadowPostAO", ref material);
             SetProperty(d._ShadowStrengthMask, "_ShadowStrengthMask", ref material);
             SetProperty(d._ShadowColor, "_ShadowColor", ref material);
             SetProperty(d._ShadowColorTex, "_ShadowColorTex", ref material);
@@ -583,7 +631,6 @@ namespace lilToon
             if(ao1st != null && ao2nd != null && (((lilTex)ao1st).tex == ((lilTex)ao2nd).tex))
             {
                 material.SetTexture(name, ((lilTex)ao1st).tex);
-                material.SetVector("_ShadowAOShift", new Vector4(0.2f,0.8f,0.2f,0.8f));
                 return;
             }
             else
@@ -591,18 +638,16 @@ namespace lilToon
                 if((ao1st != null && ((lilTex)ao1st).tex != null) && !(ao2nd != null && ((lilTex)ao2nd).tex != null))
                 {
                     material.SetTexture(name, ((lilTex)ao1st).tex);
-                    material.SetVector("_ShadowAOShift", new Vector4(0.2f,0.8f,0.0f,1.0f));
                     return;
                 }
 
                 if(!(ao1st != null && ((lilTex)ao1st).tex != null) && (ao2nd != null && ((lilTex)ao2nd).tex != null))
                 {
                     material.SetTexture(name, ((lilTex)ao2nd).tex);
-                    material.SetVector("_ShadowAOShift", new Vector4(0.0f,1.0f,0.2f,0.8f));
                     return;
                 }
 
-                bool shouldSave = EditorUtility.DisplayDialog("Convert material to lilToon", "Do you want to convert AO Mask?", "Yes", "No");
+                bool shouldSave = EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_CONVERT_AO_MASK[lang], TEXT_YES[lang], TEXT_NO[lang]);
                 if(shouldSave)
                 {
                     Texture2D srcTexture = new Texture2D(2, 2, TextureFormat.ARGB32, true, true);
@@ -669,7 +714,6 @@ namespace lilToon
 
                     Texture aotex = AssetDatabase.LoadAssetAtPath<Texture>(savePath);
                     material.SetTexture(name, aotex);
-                    material.SetVector("_ShadowAOShift", new Vector4(0.2f,0.8f,0.2f,0.8f));
                 }
             }
         }
@@ -783,6 +827,7 @@ namespace lilToon
             d._ShadowNormalStrength = GetMaterialFloat(material, "_Is_NormalMapToBase");
             d._Shadow2ndNormalStrength = d._ShadowNormalStrength;
             d._ShadowReceive = GetMaterialFloat(material, "_Set_SystemShadowsToBase");
+            d._ShadowReceive2nd = d._ShadowReceive;
             d._ShadowBorderColor = Color.black;
             d._ShadowMainStrength = 0.0f;
 
@@ -790,11 +835,27 @@ namespace lilToon
             {
                 d._ShadowAO = GetMaterialTexture(material, "_ShadingGradeMap");
                 d._Shadow2ndAO = GetMaterialTexture(material, "_ShadingGradeMap");
+                float tweak_ShadingGradeMapLevel = GetMaterialFloat(material, "_Tweak_ShadingGradeMapLevel") ?? 0.0f;
+                d._ShadowAOShift = new Vector4(1.0f,tweak_ShadingGradeMapLevel,1.0f,tweak_ShadingGradeMapLevel);
+                d._ShadowPostAO = 0.0f;
             }
             else
             {
                 d._ShadowAO = GetMaterialTexture(material, "_Set_1st_ShadePosition");
                 d._Shadow2ndAO = GetMaterialTexture(material, "_Set_2nd_ShadePosition");
+                d._ShadowPostAO = 1.0f;
+                if((d._ShadowAO != null && ((lilTex)d._ShadowAO).tex != null) && !(d._Shadow2ndAO != null && ((lilTex)d._Shadow2ndAO).tex != null))
+                {
+                    d._ShadowAOShift = new Vector4(1.0f,0.0f,0.0f,1.0f);
+                }
+                else if(!(d._ShadowAO != null && ((lilTex)d._ShadowAO).tex != null) && (d._Shadow2ndAO != null && ((lilTex)d._Shadow2ndAO).tex != null))
+                {
+                    d._ShadowAOShift = new Vector4(0.0f,1.0f,1.0f,0.0f);
+                }
+                else
+                {
+                    d._ShadowAOShift = new Vector4(1.0f,0.0f,1.0f,0.0f);
+                }
             }
 
             // Fix shadow color
