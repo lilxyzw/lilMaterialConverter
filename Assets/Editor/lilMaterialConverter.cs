@@ -19,6 +19,10 @@ using System.IO;
 // - Improved conversion of AOMap (lilToon 1.2.11)
 // - Add language (Japanese)
 
+// 1.0.4
+// - Support for lilToon 1.3.0 or later
+// - Remove unused properties
+
 namespace lilToon
 {
     public static class lilMaterialConverter
@@ -76,11 +80,12 @@ namespace lilToon
                     }
 
                     SetPropertiesToMaterial(d, ref material);
+                    RemoveShaderKeywords(material);
+                    RemoveUnusedProperties(material);
                 }
             }
             if(unsupportedMaterials.Count > 0) EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_UNSUPPORTED_SHADER[lang] + "\r\n" + string.Join("\r\n", unsupportedMaterials), TEXT_OK[lang]);
             AssetDatabase.SaveAssets();
-            AutoShaderSetting();
             EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_COMPLETE[lang], TEXT_OK[lang]);
         }
 
@@ -125,8 +130,8 @@ namespace lilToon
             // Shadow
             public float? _UseShadow;
             public float? _ShadowReceive;
-            public float? _ShadowReceive2nd;
-            public float? _ShadowReceive3rd;
+            public float? _Shadow2ndReceive;
+            public float? _Shadow3rdReceive;
             public float? _ShadowStrength;
             public lilTex? _ShadowAO;
             public lilTex? _Shadow2ndAO;
@@ -277,33 +282,42 @@ namespace lilToon
         };
 
         //----------------------------------------------------------------------------------------------------------------------
-        // Shader setting
-        private static void AutoShaderSetting()
+        // Remove Unused Properties
+        public static void RemoveShaderKeywords(Material material)
         {
-            // Load shader setting
-            lilToonSetting shaderSetting = null;
-            lilToonInspector.InitializeShaderSetting(ref shaderSetting);
-
-            if(shaderSetting?.isLocked != false) return;
-
-            lilToonSetting shaderSettingNew = UnityEngine.Object.Instantiate(shaderSetting);
-
-            for(int i = 0; i < Selection.objects.Length; i++)
+            foreach(string keyword in material.shaderKeywords)
             {
-                if(Selection.objects[i] is Material material)
-                {
-                    lilToonInspector.SetupShaderSettingFromMaterial(material, ref shaderSettingNew);
-                }
+                material.DisableKeyword(keyword);
             }
+        }
 
-            if(!lilToonInspector.EqualsShaderSetting(shaderSettingNew, shaderSetting) && EditorUtility.DisplayDialog(TEXT_DIALOG_TITLE, TEXT_MESSAGE_ENABLE_SHADER_SETTING[lang], TEXT_YES[lang], TEXT_NO[lang]))
+        private static void RemoveUnusedProperties(Material material)
+        {
+            // https://light11.hatenadiary.com/entry/2018/12/04/224253
+            var so = new SerializedObject(material);
+            so.Update();
+            var savedProps = so.FindProperty("m_SavedProperties");
+
+            var texs = savedProps.FindPropertyRelative("m_TexEnvs");
+            DeleteUnused(ref texs, material);
+
+            var floats = savedProps.FindPropertyRelative("m_Floats");
+            DeleteUnused(ref floats, material);
+
+            var colors = savedProps.FindPropertyRelative("m_Colors");
+            DeleteUnused(ref colors, material);
+
+            so.ApplyModifiedProperties();
+        }
+
+        private static void DeleteUnused(ref SerializedProperty props, Material material)
+        {
+            for(int i = props.arraySize - 1; i >= 0; i--)
             {
-                // Apply
-                lilToonInspector.CopyShaderSetting(ref shaderSetting, shaderSettingNew);
-                EditorUtility.SetDirty(shaderSetting);
-                AssetDatabase.SaveAssets();
-                lilToonInspector.ApplyShaderSetting(shaderSetting);
-                AssetDatabase.Refresh();
+                if(!material.HasProperty(props.GetArrayElementAtIndex(i).FindPropertyRelative("first").stringValue))
+                {
+                    props.DeleteArrayElementAtIndex(i);
+                }
             }
         }
 
@@ -449,8 +463,8 @@ namespace lilToon
 
             SetProperty(d._UseShadow, "_UseShadow", ref material);
             SetProperty(d._ShadowReceive, "_ShadowReceive", ref material);
-            SetProperty(d._ShadowReceive2nd, "_ShadowReceive2nd", ref material);
-            SetProperty(d._ShadowReceive3rd, "_ShadowReceive3rd", ref material);
+            SetProperty(d._Shadow2ndReceive, "_Shadow2ndReceive", ref material);
+            SetProperty(d._Shadow3rdReceive, "_Shadow3rdReceive", ref material);
             SetProperty(d._ShadowStrength, "_ShadowStrength", ref material);
             SetProperty(d._ShadowAOShift, "_ShadowAOShift", ref material);
             SetProperty(d._ShadowPostAO, "_ShadowPostAO", ref material);
@@ -827,7 +841,7 @@ namespace lilToon
             d._ShadowNormalStrength = GetMaterialFloat(material, "_Is_NormalMapToBase");
             d._Shadow2ndNormalStrength = d._ShadowNormalStrength;
             d._ShadowReceive = GetMaterialFloat(material, "_Set_SystemShadowsToBase");
-            d._ShadowReceive2nd = d._ShadowReceive;
+            d._Shadow2ndReceive = d._ShadowReceive;
             d._ShadowBorderColor = Color.black;
             d._ShadowMainStrength = 0.0f;
 
